@@ -1,0 +1,1001 @@
+# Aula 1 — Atividades Práticas
+## Engenharia de Dados com Ferramentas Open Source
+
+**Curso:** Engenharia de Dados com Ferramentas Open Source
+**Aula:** 1 — Fundamentos da Engenharia de Dados e Arquitetura de Repositórios
+**Duração das Atividades:** 2 horas
+**Pré-requisitos:** Conhecimento básico de Python e linha de comando (terminal)
+
+---
+
+## Visão Geral das Atividades
+
+As três atividades práticas desta aula formam uma sequência progressiva e interdependente. A **Atividade 1** prepara o ambiente completo que será utilizado ao longo de todo o curso. A **Atividade 2** coloca esse ambiente em operação, subindo o serviço de armazenamento de objetos MinIO que simulará o Data Lake local. A **Atividade 3** introduz os formatos de arquivo fundamentais para engenharia de dados, demonstrando na prática por que o formato Parquet é o padrão da indústria para repositórios analíticos.
+
+| Atividade | Tema | Duração Estimada | Ferramentas |
+|---|---|---|---|
+| 1 | Configuração do Ambiente de Desenvolvimento | 40 min | Docker, Docker Compose, Python 3.11+, Git |
+| 2 | Subida e Exploração do MinIO (Data Lake Local) | 30 min | Docker Compose, MinIO, Python (`boto3`) |
+| 3 | Comparação de Formatos de Arquivo: CSV, JSON e Parquet | 50 min | Python, Pandas, PyArrow, Jupyter Notebook |
+
+---
+
+## Atividade 1 — Configuração do Ambiente de Desenvolvimento
+
+### Objetivo
+
+Preparar o ambiente de desenvolvimento local que será utilizado ao longo de todo o curso, garantindo que todas as ferramentas necessárias estejam instaladas, configuradas e funcionando corretamente. Um ambiente bem configurado é o alicerce de qualquer projeto de engenharia de dados.
+
+### Contexto
+
+Diferentemente de ambientes de produção em nuvem, o ambiente local do curso utiliza **Docker** e **Docker Compose** para isolar e orquestrar os serviços necessários (MinIO, bancos de dados, ferramentas de processamento). Essa abordagem garante reprodutibilidade: o ambiente funcionará da mesma forma em qualquer máquina, independentemente do sistema operacional do aluno. Ao final, os arquivos produzidos e as imagens poderão ser utilizados como base para ambientes de produção com o uso de Kubernetes.
+
+### Pré-requisitos de Hardware
+
+O ambiente mínimo recomendado para executar todas as ferramentas do curso é de 8 GB de RAM e 20 GB de espaço em disco disponível. Ambientes com 16 GB de RAM proporcionarão uma experiência mais fluida, especialmente nas aulas de Apache Spark.
+
+---
+
+### Passo 1 — Instalação do Docker e Docker Compose
+
+O Docker é a plataforma de conteinerização que permite executar serviços complexos como MinIO e Airflow com um único comando, sem necessidade de instalação manual de dependências.
+
+
+Instale o [Docker Desktop para Windows](https://www.docker.com/products/docker-desktop/), que requer o WSL 2 (Windows Subsystem for Linux) habilitado. Siga as instruções do instalador.
+
+**Verificação:**
+
+```cmd
+# Verificar a versão do Docker
+docker --version
+# Saída esperada: Docker version 24.x.x, build ...
+
+# Verificar o Docker Compose
+docker compose version
+# Saída esperada: Docker Compose version v2.x.x
+```
+
+---
+
+### Passo 2 — Instalação do Python 3.11+ e Gerenciador de Pacotes
+
+O Python é a linguagem principal do curso. Recomenda-se fortemente o uso de ambientes virtuais para isolar as dependências de cada projeto.
+
+```cmd
+python --version
+```
+
+### Se não estiver instalado, será oferecida a opção de instalar da Microsoft Store que é a forma mais simples de efetuar essa instalação.
+
+---
+
+### Passo 3 — Instalação do Git e Configuração Inicial
+
+O Git será utilizado para versionar todos os scripts e configurações desenvolvidos ao longo do curso.
+
+Faça o download do instalador a partir do seguinte link:  https://git-scm.com/install/windows
+
+---
+
+---
+
+### Passo 4 — Criação da Estrutura de Diretórios do Projeto
+
+Toda a estrutura do curso seguirá uma organização padronizada que reflete a arquitetura Medallion. Execute os comandos abaixo para criar o projeto base:
+
+```cmd
+PS C:\ mkdir ~/engenharia-dados
+PS C:\ cd ~/engenharia-dados
+PS C:\Users\mamaz\engenharia-dados> mkdir notebooks, scripts, dbt_project, airflow/dags, docker, data/bronze, data/silver, data/gold
+PS C:\Users\mamaz\engenharia-dados> echo "" > notebooks/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > scripts/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > dbt_project/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > airflow/dags/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > docker/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > data/bronze/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > data/silver/README.md
+PS C:\Users\mamaz\engenharia-dados> echo "" > data/gold/README.md
+PS C:\Users\mamaz\engenharia-dados> python -m venv .venv
+PS C:\Users\mamaz\engenharia-dados> Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+PS C:\Users\mamaz\engenharia-dados> .\.venv\Scripts\Activate.ps1
+PS C:\Users\mamaz\engenharia-dados> pip install pandas pyarrow boto3 jupyter notebook
+```
+---
+
+### Passo 5 — Inicialização do Repositório Git
+
+Crie um arquivo .gitignore com o seguinte conteúdo na pasta engenharia-dados:
+
+Abra o arquivo utilizando o vscode:
+```cmd
+PS C:\Users\mamaz\engenharia-dados> code .gitignore
+```
+
+Copie o seguinte conteúdo:
+
+```cmd
+.venv
+__pycache__/
+*.pyc
+
+.ipynb_checkpoints
+
+data/
+
+.env
+*.log
+```
+
+Nosso primeiro commit:
+
+```cmd
+PS C:\Users\mamaz\engenharia-dados> git init
+PS C:\Users\mamaz\engenharia-dados> git config user.name "Seu Nome"
+PS C:\Users\mamaz\engenharia-dados> git config user.email "Seu email"
+PS C:\Users\mamaz\engenharia-dados> git config --list
+PS C:\Users\mamaz\engenharia-dados> git add .
+PS C:\Users\mamaz\engenharia-dados> git commit -m "feat: estrutura inicial do projeto do curso"
+```
+
+### Verificação Final da Atividade 1
+
+Execute o script abaixo para confirmar que o ambiente está corretamente configurado (arquivo scripts/teste_instalacao_python.py):
+
+```python
+import sys
+import subprocess
+
+checks = {
+    "Python 3.11+": sys.version_info >= (3, 11),
+    "pandas": False,
+    "pyarrow": False,
+    "boto3": False,
+    "jupyter": False,
+}
+
+for lib in ["pandas", "pyarrow", "boto3", "jupyter"]:
+    try:
+        __import__(lib)
+        checks[lib] = True
+    except ImportError:
+        pass
+
+print("=== Verificação do Ambiente ===")
+for item, status in checks.items():
+    icon = "✅" if status else "❌"
+    print(f"  {icon}  {item}")
+
+all_ok = all(checks.values())
+print()
+if all_ok:
+    print("🎉 Ambiente configurado com sucesso! Pronto para a Atividade 2.")
+else:
+    print("⚠️  Alguns itens precisam de atenção. Revise os passos acima.")
+```
+
+Para executar:
+
+```cmd
+PS C:\Users\mamaz\engenharia-dados> python .\scripts\teste_instalacao_python.py
+```
+
+---
+
+## Atividade 2 — Subida e Exploração do MinIO (Data Lake Local)
+
+### Objetivo
+
+Configurar e inicializar o **MinIO**, um servidor de armazenamento de objetos de alto desempenho compatível com a API do Amazon S3. O MinIO será a fundação do Data Lake local utilizado em todas as aulas do curso, simulando o comportamento de serviços de nuvem como Amazon S3, Google Cloud Storage e Azure Blob Storage.
+
+### Contexto
+
+Em ambientes de produção, Data Lakes são construídos sobre serviços de armazenamento de objetos em nuvem (principalmente o Amazon S3). O MinIO replica essa interface localmente, permitindo que todos os scripts e ferramentas desenvolvidos no curso funcionem em produção sem alterações de código — apenas mudando as credenciais e o endpoint de conexão.
+
+A compatibilidade com a API S3 é fundamental: ferramentas como Apache Spark, DuckDB, dbt e Apache Airflow se conectam ao MinIO exatamente da mesma forma que se conectariam ao S3 real.
+
+---
+
+### Passo 1 — Criação do Arquivo Docker Compose para o MinIO
+
+```bash
+cd ~/engenharia-dados-curso/docker
+
+cat > compose.yml << 'EOF'
+services:
+  minio:
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z   # fixe a versão; evite "latest"
+    container_name: minio-datalake
+    ports:
+      - "9000:9000" # API S3
+      - "9001:9001" # Console web
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_UPDATE: "off"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      # a imagem é mínima (UBI micro) e pode não ter curl; usa o mc embutido
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+    driver: local
+EOF
+```
+
+> **Nota de Segurança:** As credenciais `minioadmin` / `minioadmin123` são adequadas apenas para desenvolvimento local. Em ambientes de produção, utilize credenciais fortes e gerencie-as com ferramentas de gerenciamento de segredos como HashiCorp Vault ou AWS Secrets Manager.
+
+---
+
+### Passo 2 — Inicialização do Serviço MinIO
+
+```bash
+# Navegar para o diretório docker
+cd ~/engenharia-dados-curso/docker
+
+# Iniciar o MinIO em segundo plano
+docker compose up -d
+
+# Verificar se o contêiner está rodando
+docker compose ps
+
+# Acompanhar os logs de inicialização
+docker compose logs minio
+```
+
+A saída esperada dos logs deve conter uma linha similar a:
+
+```
+MinIO Object Storage Server
+Copyright: 2015-2024 MinIO, Inc.
+License: GNU AGPLv3
+Version: RELEASE.2024-01-01T00-00-00Z
+
+API: http://0.0.0.0:9000
+WebUI: http://0.0.0.0:9001
+```
+
+---
+
+### Passo 3 — Acesso ao Console Web do MinIO
+
+Abra o navegador e acesse `http://localhost:9001`. Utilize as credenciais configuradas:
+
+- **Usuário:** `minioadmin`
+- **Senha:** `minioadmin123`
+
+Após o login, você verá o painel de administração do MinIO. Explore a interface para se familiarizar com os conceitos de **Buckets** (equivalentes a pastas raiz no S3) e **Objects** (os arquivos armazenados).
+
+---
+
+### Passo 4 — Criação dos Buckets da Arquitetura Medallion via Python
+
+Em vez de criar os buckets manualmente pela interface gráfica, utilizaremos Python com a biblioteca `boto3` para automatizar essa tarefa — uma prática essencial em engenharia de dados.
+
+Crie o arquivo `scripts/setup_minio.py`:
+
+```python
+# scripts/setup_minio.py
+"""
+Script de configuração inicial do MinIO.
+Cria os buckets correspondentes às camadas da Arquitetura Medallion:
+  - bronze: dados brutos, sem transformação
+  - silver: dados limpos e conformados
+  - gold:   dados curados, prontos para consumo
+"""
+
+import boto3
+from botocore.exceptions import ClientError
+
+# Configuração da conexão com o MinIO local
+MINIO_ENDPOINT = "http://localhost:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "minioadmin123"
+
+# Buckets a serem criados (camadas Medallion)
+BUCKETS = [
+    {
+        "name": "bronze",
+        "description": "Dados brutos ingeridos das fontes originais, sem transformação."
+    },
+    {
+        "name": "silver",
+        "description": "Dados limpos, padronizados e integrados."
+    },
+    {
+        "name": "gold",
+        "description": "Dados curados e modelados para Analytics e Machine Learning."
+    },
+]
+
+
+def create_s3_client():
+    """Cria e retorna um cliente S3 configurado para o MinIO local."""
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=MINIO_ACCESS_KEY,
+        aws_secret_access_key=MINIO_SECRET_KEY,
+        region_name="us-east-1",  # Valor obrigatório, mas ignorado pelo MinIO
+    )
+
+
+def create_bucket(client, bucket_name: str) -> bool:
+    """
+    Cria um bucket no MinIO.
+    Retorna True se criado com sucesso, False se já existia.
+    """
+    try:
+        client.create_bucket(Bucket=bucket_name)
+        return True
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code == "BucketAlreadyOwnedByYou":
+            return False  # Bucket já existe — não é um erro
+        raise  # Re-lança erros inesperados
+
+
+def list_buckets(client) -> list:
+    """Retorna a lista de buckets existentes no MinIO."""
+    response = client.list_buckets()
+    return [b["Name"] for b in response.get("Buckets", [])]
+
+
+def main():
+    print("=" * 55)
+    print("  Configuração do Data Lake Local (MinIO)")
+    print("  Arquitetura Medallion — Bronze / Silver / Gold")
+    print("=" * 55)
+
+    client = create_s3_client()
+
+    for bucket in BUCKETS:
+        name = bucket["name"]
+        created = create_bucket(client, name)
+        status = "✅ Criado" if created else "⚠️  Já existia"
+        print(f"\n  [{name.upper()}]  {status}")
+        print(f"  Descrição: {bucket['description']}")
+
+    print("\n" + "=" * 55)
+    print("  Buckets disponíveis no MinIO:")
+    for b in list_buckets(client):
+        print(f"    🪣  {b}")
+    print("=" * 55)
+    print("\n  ✅ Data Lake local configurado com sucesso!")
+    print("  Acesse o console em: http://localhost:9001")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Execute o script:
+
+```bash
+cd ~/engenharia-dados-curso
+source .venv/bin/activate
+python scripts/setup_minio.py
+```
+
+A saída esperada é:
+
+```
+=======================================================
+  Configuração do Data Lake Local (MinIO)
+  Arquitetura Medallion — Bronze / Silver / Gold
+=======================================================
+
+  [BRONZE]  ✅ Criado
+  Descrição: Dados brutos ingeridos das fontes originais, sem transformação.
+
+  [SILVER]  ✅ Criado
+  Descrição: Dados limpos, padronizados e integrados.
+
+  [GOLD]  ✅ Criado
+  Descrição: Dados curados e modelados para Analytics e Machine Learning.
+
+=======================================================
+  Buckets disponíveis no MinIO:
+    🪣  bronze
+    🪣  silver
+    🪣  gold
+=======================================================
+
+  ✅ Data Lake local configurado com sucesso!
+```
+
+---
+
+### Passo 5 — Teste de Upload e Download de Arquivo
+
+Valide que o MinIO está funcionando corretamente fazendo upload e download de um arquivo de teste:
+
+```python
+# scripts/test_minio_connection.py
+"""
+Teste de conectividade com o MinIO.
+Realiza upload de um arquivo de teste, verifica sua existência
+e faz o download para confirmar a integridade.
+"""
+
+import boto3
+import json
+from datetime import datetime, timezone
+
+MINIO_ENDPOINT = "http://localhost:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "minioadmin123"
+
+client = boto3.client(
+    "s3",
+    endpoint_url=MINIO_ENDPOINT,
+    aws_access_key_id=MINIO_ACCESS_KEY,
+    aws_secret_access_key=MINIO_SECRET_KEY,
+    region_name="us-east-1",
+)
+
+# Conteúdo do arquivo de teste
+test_data = {
+    "mensagem": "Teste de conectividade com o MinIO",
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "camada": "bronze",
+    "status": "ok",
+}
+
+# Definir o caminho do objeto no bucket (particionamento por data)
+hoje = datetime.now()
+object_key = f"_testes/ano={hoje.year}/mes={hoje.month:02d}/dia={hoje.day:02d}/teste_conexao.json"
+
+# Upload
+print("📤 Fazendo upload do arquivo de teste...")
+client.put_object(
+    Bucket="bronze",
+    Key=object_key,
+    Body=json.dumps(test_data, indent=2, ensure_ascii=False),
+    ContentType="application/json",
+)
+print(f"   ✅ Arquivo enviado para: bronze/{object_key}")
+
+# Verificar existência
+response = client.head_object(Bucket="bronze", Key=object_key)
+tamanho = response["ContentLength"]
+print(f"\n📋 Metadados do arquivo:")
+print(f"   Tamanho: {tamanho} bytes")
+print(f"   Tipo: {response['ContentType']}")
+print(f"   Última modificação: {response['LastModified']}")
+
+# Download e verificação
+print("\n📥 Fazendo download e verificando conteúdo...")
+obj = client.get_object(Bucket="bronze", Key=object_key)
+conteudo = json.loads(obj["Body"].read().decode("utf-8"))
+assert conteudo["status"] == "ok", "Erro: conteúdo do arquivo não confere!"
+print(f"   ✅ Conteúdo verificado: {conteudo['mensagem']}")
+print("\n🎉 MinIO está funcionando corretamente!")
+```
+
+```bash
+python scripts/test_minio_connection.py
+```
+
+---
+
+### Verificação Final da Atividade 2
+
+Ao final desta atividade, o aluno deve ser capaz de:
+
+1. Confirmar que o contêiner MinIO está em execução com `docker compose ps`
+2. Acessar o console web em `http://localhost:9001` e visualizar os 3 buckets criados (`bronze`, `silver`, `gold`)
+3. Ver o arquivo de teste em `bronze/_testes/...` no console web
+4. Compreender a estrutura de particionamento por data (`ano=YYYY/mes=MM/dia=DD`) que será utilizada ao longo do curso
+
+---
+
+## Atividade 3 — Comparação de Formatos de Arquivo: CSV, JSON e Parquet
+
+### Objetivo
+
+Demonstrar empiricamente as diferenças de desempenho, eficiência de armazenamento e capacidade de consulta entre os formatos CSV, JSON e Parquet. Esta atividade fundamenta a escolha do Parquet como formato padrão para Data Lakes e explica por que ele é o pilar dos formatos de tabela modernos como Apache Iceberg e Delta Lake.
+
+### Contexto
+
+A escolha do formato de arquivo tem impacto direto no custo de armazenamento e na velocidade de processamento de um Data Lake. O formato **Parquet** é colunar, comprimido e fortemente tipado — características que o tornam até 10 vezes mais eficiente que o CSV para cargas analíticas típicas, onde se lê apenas um subconjunto das colunas de um dataset grande.
+
+Esta atividade utiliza o dataset **Iris** do UCI Machine Learning Repository para os exemplos básicos, e dados sintéticos para demonstrar as diferenças de escala.
+
+---
+
+### Passo 1 — Criação do Jupyter Notebook
+
+```bash
+cd ~/engenharia-dados-curso
+source .venv/bin/activate
+
+# Iniciar o Jupyter Notebook
+jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser
+
+# O terminal exibirá uma URL com token de acesso, por exemplo:
+# http://127.0.0.1:8888/tree?token=abc123...
+```
+
+Acesse a URL exibida no terminal e crie um novo notebook em `notebooks/` com o nome `aula1_formatos_arquivo.ipynb`.
+
+---
+
+### Passo 2 — Importações e Configuração Inicial
+
+No notebook, execute as células a seguir em sequência:
+
+```python
+# Célula 1 — Importações
+import pandas as pd
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+import json
+import os
+import time
+import boto3
+from pathlib import Path
+from datetime import datetime, timezone
+
+print(f"Pandas: {pd.__version__}")
+print(f"PyArrow: {pa.__version__}")
+print("✅ Bibliotecas importadas com sucesso!")
+```
+
+```python
+# Célula 2 — Configuração do cliente MinIO
+s3_client = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:9000",
+    aws_access_key_id="minioadmin",
+    aws_secret_access_key="minioadmin123",
+    region_name="us-east-1",
+)
+
+# Diretório temporário local para os arquivos gerados
+Path("../data/bronze/iris").mkdir(parents=True, exist_ok=True)
+Path("../data/bronze/sintetico").mkdir(parents=True, exist_ok=True)
+print("✅ Diretórios e conexão MinIO configurados!")
+```
+---
+
+### Passo 3 — Carregamento e Exploração do Dataset Iris
+
+```python
+# Célula 3 — Carregamento do dataset Iris
+# O dataset Iris está disponível diretamente no repositório UCI
+# Fonte: https://archive.ics.uci.edu/dataset/53/iris
+
+URL_IRIS = (
+    "https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data"
+)
+
+COLUNAS_IRIS = [
+    "comprimento_sepala_cm",
+    "largura_sepala_cm",
+    "comprimento_petala_cm",
+    "largura_petala_cm",
+    "especie",
+]
+
+df_iris = pd.read_csv(URL_IRIS, header=None, names=COLUNAS_IRIS)
+
+# Adicionar metadados de ingestão (prática da camada Bronze)
+df_iris["_fonte"] = "uci_iris"
+df_iris["_ingerido_em"] = datetime.now(timezone.utc).isoformat()
+df_iris["_versao_schema"] = "1.0"
+
+print(f"Shape do dataset: {df_iris.shape}")
+print(f"\nTipos de dados:\n{df_iris.dtypes}")
+print(f"\nPrimeiras 5 linhas:")
+df_iris.head()
+```
+
+```python
+# Célula 4 — Estatísticas descritivas do dataset
+print("=== Estatísticas Descritivas ===")
+print(df_iris.describe())
+print(f"\nDistribuição por espécie:")
+print(df_iris["especie"].value_counts())
+```
+
+---
+
+### Passo 4 — Geração de Dataset Sintético para Testes de Escala
+
+O dataset Iris possui apenas 150 linhas, insuficiente para demonstrar diferenças de performance. Vamos gerar um dataset sintético de 1 milhão de registros que simula dados de transações de e-commerce:
+
+```python
+# Célula 5 — Geração do dataset sintético (1 milhão de registros)
+print("Gerando dataset sintético de 1.000.000 registros...")
+inicio = time.time()
+
+np.random.seed(42)
+N = 1_000_000
+
+CATEGORIAS = ["Eletrônicos", "Roupas", "Alimentos", "Livros", "Esportes"]
+STATUS = ["concluido", "cancelado", "pendente", "reembolsado"]
+REGIOES = ["Sudeste", "Sul", "Nordeste", "Norte", "Centro-Oeste"]
+
+df_sintetico = pd.DataFrame({
+    "id_pedido": range(1, N + 1),
+    "id_cliente": np.random.randint(1, 100_001, N),
+    "id_produto": np.random.randint(1, 10_001, N),
+    "categoria": np.random.choice(CATEGORIAS, N),
+    "valor_unitario": np.round(np.random.uniform(5.0, 2000.0, N), 2),
+    "quantidade": np.random.randint(1, 11, N),
+    "status_pedido": np.random.choice(STATUS, N, p=[0.75, 0.10, 0.10, 0.05]),
+    "regiao": np.random.choice(REGIOES, N),
+    "data_pedido": pd.date_range(start="2022-01-01", periods=N, freq="30s"),
+    "avaliacao_cliente": np.random.choice([1, 2, 3, 4, 5, None], N, p=[0.05, 0.08, 0.15, 0.30, 0.37, 0.05]),
+    "_fonte": "sistema_ecommerce_v2",
+    "_ingerido_em": datetime.now(timezone.utc).isoformat(),
+})
+
+# Calcular o valor total do pedido
+df_sintetico["valor_total"] = (
+    df_sintetico["valor_unitario"] * df_sintetico["quantidade"]
+).round(2)
+
+duracao = time.time() - inicio
+print(f"✅ Dataset gerado em {duracao:.2f}s")
+print(f"Shape: {df_sintetico.shape}")
+print(f"Uso de memória: {df_sintetico.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+```
+
+---
+
+### Passo 5 — Gravação nos Três Formatos
+
+```python
+# Célula 6 — Gravação do dataset sintético nos três formatos
+
+BASE_PATH = Path("../data/bronze/sintetico")
+
+# ── CSV ──────────────────────────────────────────────────────────────────────
+print("Gravando CSV...")
+inicio = time.time()
+caminho_csv = BASE_PATH / "pedidos.csv"
+df_sintetico.to_csv(caminho_csv, index=False)
+tempo_escrita_csv = time.time() - inicio
+tamanho_csv = caminho_csv.stat().st_size
+
+# ── JSON (linhas) ─────────────────────────────────────────────────────────────
+print("Gravando JSON Lines (JSONL)...")
+inicio = time.time()
+caminho_json = BASE_PATH / "pedidos.jsonl"
+df_sintetico.to_json(caminho_json, orient="records", lines=True, date_format="iso")
+tempo_escrita_json = time.time() - inicio
+tamanho_json = caminho_json.stat().st_size
+
+# ── Parquet (sem compressão) ──────────────────────────────────────────────────
+print("Gravando Parquet (sem compressão)...")
+inicio = time.time()
+caminho_parquet_raw = BASE_PATH / "pedidos_sem_compressao.parquet"
+df_sintetico.to_parquet(caminho_parquet_raw, index=False, compression=None)
+tempo_escrita_parquet_raw = time.time() - inicio
+tamanho_parquet_raw = caminho_parquet_raw.stat().st_size
+
+# ── Parquet (Snappy — padrão da indústria) ────────────────────────────────────
+print("Gravando Parquet (Snappy)...")
+inicio = time.time()
+caminho_parquet_snappy = BASE_PATH / "pedidos_snappy.parquet"
+df_sintetico.to_parquet(caminho_parquet_snappy, index=False, compression="snappy")
+tempo_escrita_parquet_snappy = time.time() - inicio
+tamanho_parquet_snappy = caminho_parquet_snappy.stat().st_size
+
+# ── Parquet (ZSTD — melhor compressão) ───────────────────────────────────────
+print("Gravando Parquet (ZSTD)...")
+inicio = time.time()
+caminho_parquet_zstd = BASE_PATH / "pedidos_zstd.parquet"
+df_sintetico.to_parquet(caminho_parquet_zstd, index=False, compression="zstd")
+tempo_escrita_parquet_zstd = time.time() - inicio
+tamanho_parquet_zstd = caminho_parquet_zstd.stat().st_size
+
+print("\n✅ Todos os arquivos gravados!")
+```
+
+---
+
+### Passo 6 — Comparação de Tamanho em Disco
+
+```python
+# Célula 7 — Tabela comparativa de tamanho em disco
+
+def formatar_tamanho(bytes_val: int) -> str:
+    """Formata bytes em MB com 1 casa decimal."""
+    return f"{bytes_val / 1024**2:.1f} MB"
+
+def reducao_percentual(base: int, comparado: int) -> str:
+    """Calcula a redução percentual em relação ao CSV."""
+    reducao = (1 - comparado / base) * 100
+    return f"{reducao:.1f}% menor"
+
+resultados_tamanho = {
+    "Formato": ["CSV", "JSON Lines", "Parquet (sem compressão)", "Parquet (Snappy)", "Parquet (ZSTD)"],
+    "Tamanho em Disco": [
+        formatar_tamanho(tamanho_csv),
+        formatar_tamanho(tamanho_json),
+        formatar_tamanho(tamanho_parquet_raw),
+        formatar_tamanho(tamanho_parquet_snappy),
+        formatar_tamanho(tamanho_parquet_zstd),
+    ],
+    "Redução vs CSV": [
+        "— (referência)",
+        reducao_percentual(tamanho_csv, tamanho_json),
+        reducao_percentual(tamanho_csv, tamanho_parquet_raw),
+        reducao_percentual(tamanho_csv, tamanho_parquet_snappy),
+        reducao_percentual(tamanho_csv, tamanho_parquet_zstd),
+    ],
+    "Tempo de Escrita (s)": [
+        f"{tempo_escrita_csv:.2f}",
+        f"{tempo_escrita_json:.2f}",
+        f"{tempo_escrita_parquet_raw:.2f}",
+        f"{tempo_escrita_parquet_snappy:.2f}",
+        f"{tempo_escrita_parquet_zstd:.2f}",
+    ],
+}
+
+df_tamanhos = pd.DataFrame(resultados_tamanho)
+print("=== Comparativo de Tamanho em Disco (1.000.000 registros) ===")
+print(df_tamanhos.to_string(index=False))
+```
+
+---
+
+### Passo 7 — Comparação de Velocidade de Leitura
+
+Esta é a demonstração mais importante: a leitura seletiva de colunas (column pruning), que é onde o Parquet demonstra sua maior vantagem sobre formatos baseados em linhas.
+
+```python
+# Célula 8 — Comparação de velocidade de leitura (arquivo completo)
+
+REPETICOES = 3  # Número de repetições para calcular a média
+
+def medir_tempo_leitura(funcao_leitura, repeticoes=REPETICOES):
+    """Executa a função de leitura N vezes e retorna o tempo médio."""
+    tempos = []
+    for _ in range(repeticoes):
+        inicio = time.time()
+        funcao_leitura()
+        tempos.append(time.time() - inicio)
+    return sum(tempos) / len(tempos)
+
+# Leitura completa
+tempo_csv_completo = medir_tempo_leitura(
+    lambda: pd.read_csv(caminho_csv)
+)
+tempo_json_completo = medir_tempo_leitura(
+    lambda: pd.read_json(caminho_json, lines=True)
+)
+tempo_parquet_completo = medir_tempo_leitura(
+    lambda: pd.read_parquet(caminho_parquet_snappy)
+)
+
+print(f"Leitura COMPLETA (1.000.000 linhas, todas as colunas):")
+print(f"  CSV:     {tempo_csv_completo:.3f}s")
+print(f"  JSON:    {tempo_json_completo:.3f}s")
+print(f"  Parquet: {tempo_parquet_completo:.3f}s")
+print(f"  → Parquet é {tempo_csv_completo / tempo_parquet_completo:.1f}x mais rápido que CSV")
+```
+
+```python
+# Célula 9 — Leitura seletiva de colunas (column pruning)
+# Esta é a vantagem FUNDAMENTAL do formato colunar
+
+COLUNAS_ANALITICAS = ["categoria", "valor_total", "status_pedido", "regiao"]
+
+# CSV: precisa ler TODAS as colunas e depois filtrar
+tempo_csv_seletivo = medir_tempo_leitura(
+    lambda: pd.read_csv(caminho_csv, usecols=COLUNAS_ANALITICAS)
+)
+
+# Parquet: lê APENAS as colunas solicitadas do disco
+tempo_parquet_seletivo = medir_tempo_leitura(
+    lambda: pd.read_parquet(caminho_parquet_snappy, columns=COLUNAS_ANALITICAS)
+)
+
+print(f"Leitura SELETIVA (apenas 4 de 14 colunas):")
+print(f"  CSV:     {tempo_csv_seletivo:.3f}s  (ainda lê tudo do disco)")
+print(f"  Parquet: {tempo_parquet_seletivo:.3f}s (lê apenas as colunas necessárias)")
+print(f"  → Parquet é {tempo_csv_seletivo / tempo_parquet_seletivo:.1f}x mais rápido na leitura seletiva")
+print()
+print("💡 Em Data Lakes com petabytes de dados, essa diferença representa")
+print("   economia de horas de processamento e centenas de dólares em custo de nuvem.")
+```
+
+---
+
+
+### Passo 8 — Inspeção do Schema do Parquet
+
+Uma das vantagens do Parquet é o armazenamento do schema (metadados de tipos) junto com os dados:
+
+```python
+# Célula 10 — Inspeção do schema do arquivo Parquet
+
+schema_parquet = pq.read_schema(caminho_parquet_snappy)
+
+print("=== Schema do Arquivo Parquet ===")
+print(schema_parquet)
+print()
+print("=== Metadados do Arquivo ===")
+metadata = pq.read_metadata(caminho_parquet_snappy)
+print(f"Número de row groups: {metadata.num_row_groups}")
+print(f"Número de colunas: {metadata.num_columns}")
+print(f"Número de linhas: {metadata.num_rows:,}")
+print(f"Tamanho serializado: {metadata.serialized_size:,} bytes")
+print()
+print("💡 O Parquet armazena o schema junto com os dados.")
+print("   Isso elimina a necessidade de inferência de tipos na leitura,")
+print("   garantindo consistência e evitando erros silenciosos.")
+```
+
+### Passo 9 — Upload dos Arquivos para o MinIO (Camada Bronze)
+
+Após comparar os formatos, vamos fazer o upload do arquivo Parquet (o escolhido para o Data Lake) para o MinIO, seguindo a convenção de particionamento por data:
+
+```python
+# Célula 11 — Upload do Parquet para o MinIO (camada Bronze)
+
+hoje = datetime.now()
+prefixo_particao = f"ano={hoje.year}/mes={hoje.month:02d}/dia={hoje.day:02d}"
+
+# Upload do Parquet Snappy para o bucket Bronze
+chave_objeto = f"ecommerce_sintetico/{prefixo_particao}/pedidos.parquet"
+
+print(f"📤 Fazendo upload para: bronze/{chave_objeto}")
+inicio = time.time()
+
+s3_client.upload_file(
+    Filename=str(caminho_parquet_snappy),
+    Bucket="bronze",
+    Key=chave_objeto,
+    ExtraArgs={"ContentType": "application/octet-stream"},
+)
+
+duracao = time.time() - inicio
+print(f"✅ Upload concluido em {duracao:.2f}s")
+
+# Verificar o objeto no MinIO
+response = s3_client.head_object(Bucket="bronze", Key=chave_objeto)
+print(f"\nMetadados no MinIO:")
+print(f"  Tamanho: {response['ContentLength'] / 1024**2:.1f} MB")
+print(f"  Última modificação: {response['LastModified']}")
+print(f"\n🎉 Dado bruto armazenado na camada Bronze do Data Lake!")
+print(f"   Acesse em: http://localhost:9001/browser/bronze")
+```
+
+---
+
+### Passo 10 — Resumo Comparativo Final
+
+```python
+# Célula 12 — Resumo final comparativo
+
+print("=" * 65)
+print("  RESUMO COMPARATIVO — FORMATOS DE ARQUIVO PARA DATA LAKES")
+print("=" * 65)
+
+resumo = pd.DataFrame({
+    "Característica": [
+        "Tipo de armazenamento",
+        "Compressão nativa",
+        "Schema embutido",
+        "Leitura seletiva de colunas",
+        "Suporte a tipos complexos",
+        "Legível por humanos",
+        "Ideal para Data Lakes",
+        "Suporte em ferramentas",
+    ],
+    "CSV": [
+        "Orientado a linhas",
+        "Não",
+        "Não (inferido)",
+        "Não (lê tudo)",
+        "Não",
+        "Sim",
+        "❌ Não recomendado",
+        "Universal",
+    ],
+    "JSON/JSONL": [
+        "Orientado a linhas",
+        "Não",
+        "Não (inferido)",
+        "Não (lê tudo)",
+        "Sim (aninhado)",
+        "Sim",
+        "⚠️  Apenas para APIs",
+        "Universal",
+    ],
+    "Parquet": [
+        "Orientado a colunas",
+        "Sim (Snappy/ZSTD)",
+        "Sim (forte tipagem)",
+        "Sim (column pruning)",
+        "Sim (listas, mapas)",
+        "Não (binário)",
+        "✅ Padrão da indústria",
+        "Spark, DuckDB, Iceberg...",
+    ],
+})
+
+print(resumo.to_string(index=False))
+print()
+print("Conclusão: O formato Parquet com compressão Snappy ou ZSTD é o")
+print("padrão da indústria para Data Lakes por combinar alta compressão,")
+print("leitura seletiva de colunas e schema fortemente tipado.")
+```
+
+## Ingestão de Dados e a Camada Bronze
+
+**Pré-requisitos:** ambiente Docker operacional, MinIO rodando com buckets Bronze/Silver/Gold criados, ambiente virtual Python ativo
+
+---
+
+## Visão Geral das Atividades
+
+As três atividades a seguir constroem os primeiros pipelines de ingestão reais do curso, conectando fontes externas ao Data Lake local. A **Atividade 1** coloca o Airbyte em operação — uma plataforma visual de ingestão que elimina a necessidade de código para conectar dezenas de fontes de dados. A **Atividade 2** desenvolve um pipeline programático em Python com a biblioteca `dlt` (Data Load Tool), extraindo dados de duas APIs públicas com paginação e carregando-os diretamente no MinIO em formato Parquet. A **Atividade 3** consolida as boas práticas de organização da camada Bronze, implementando particionamento lógico por data e adicionando metadados de rastreabilidade a cada arquivo ingerido.
+
+| Atividade | Tema | Duração Estimada | Ferramentas |
+|---|---|---|---|
+| 1 | Configuração do Airbyte e Criação de Conexões | 50 min | Docker Compose, Airbyte OSS |
+| 2 | Pipeline de Ingestão com `dlt` + APIs Públicas | 60 min | Python, `dlt`, REST Countries API, PokeAPI |
+| 3 | Organização da Camada Bronze com Particionamento | 40 min | Python, `boto3`, Parquet, MinIO |
+
+> **Regra de ouro da camada Bronze:** dados ingeridos nesta camada nunca devem ser alterados após a gravação. O objetivo é preservar o dado exatamente como veio da fonte, acrescentando apenas metadados de rastreabilidade (timestamp de ingestão, nome da fonte, versão do schema). Qualquer transformação, limpeza ou enriquecimento ocorre exclusivamente nas camadas Silver e Gold.
+
+---
+
+## Atividade 4 — Configuração do Airbyte e Criação de Conexões
+
+### Objetivo
+
+Instalar e configurar o **Airbyte Open Source** via Docker Compose, explorar sua interface web e criar uma conexão completa entre uma fonte de dados externa (REST Countries API) e o MinIO (destino S3-compatível), demonstrando como uma plataforma de ingestão visual elimina a necessidade de código para o processo de extração e carga (o "EL" do paradigma ELT).
+
+### Contexto
+
+O Airbyte é uma plataforma open source de integração de dados que oferece mais de 350 conectores pré-construídos para bancos de dados, APIs, arquivos e serviços SaaS[[1]](#ref1). Sua arquitetura baseada em contêineres Docker permite que cada conector seja executado de forma isolada, garantindo que uma falha em uma conexão não afete as demais. Em ambientes de produção, o Airbyte é implantado em Kubernetes para escalabilidade horizontal.
+
+---
+
+### Passo 1 — Adição do Airbyte ao Docker Compose
+
+O Airbyte requer vários serviços internos (servidor, worker, banco de dados de metadados, servidor de temporalidade). A forma mais simples de instalá-lo localmente é utilizando o script oficial de instalação, que gerencia automaticamente todos esses serviços.
+
+```bash
+# Navegar para o diretório de trabalho do curso
+cd ~/engenharia-dados-curso
+
+# Criar um subdiretório dedicado ao Airbyte
+mkdir -p airbyte && cd airbyte
+
+```
+
+--- 
+
+### Instalação no Windows
+
+1. Na página: https://github.com/airbytehq/abctl/releases/latest faça o download da versão para o windows
+2. Descompacte o arquivo e coloque a pasta do abctl.exe no path
+3. Com o docker desktop aberto, execute:
+
+
+```cmd
+abctl local install
+```
+
+3. ALTERNATIVO: Em máquinas com poucos recursos, use:
+
+```cmd
+abctl local install --low-resource-mode
+```
+
