@@ -3451,7 +3451,7 @@ A pasta `dbt_project/` já existe desde a Aula 1, e o `dbt init` recusa pastas e
 
 ```powershell
 cd dbt_project
-mkdir models/staging, models/intermediate, models/marts/core, models/marts/analytics, models/marts/ml, macros, snapshots, tests, seeds
+md models/staging, models/intermediate, models/marts/core, models/marts/analytics, models/marts/ml, macros, snapshots, tests, seeds
 ```
 
 ```text
