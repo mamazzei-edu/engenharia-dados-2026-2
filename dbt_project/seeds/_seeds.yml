@@ -1,0 +1,17 @@
+version: 2
+
+seeds:
+  - name: regioes
+    description: "Regiões do Brasil (IBGE): chave padronizada, sigla e nome completo."
+    config:
+      schema: seeds
+      column_types:
+        regiao: varchar
+        sigla_regiao: varchar
+        nome_regiao: varchar
+    columns:
+      - name: regiao
+        description: "Chave no mesmo formato da Silver (minúsculas, padronizar_string)"
+        data_tests: [unique, not_null]
+      - name: sigla_regiao
+        data_tests: [unique, not_null]
