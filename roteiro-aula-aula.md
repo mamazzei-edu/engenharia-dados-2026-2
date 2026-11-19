@@ -4527,3 +4527,819 @@ dbt build --select dim_clientes
 5. Explicar teste de dados × teste unitário × contrato e onde cada um roda (desenvolvimento, CI, produção).
 
 ---
+
+
+# AULA 8 — Governança, Orquestração e Deploy em Produção
+
+**Duração da prática:** 2 horas
+**Pré-requisitos:** Aulas 6 e 7 concluídas (`dbt build` verde); Docker Desktop com pelo menos 6 GB de RAM livres. Para liberar memória, pare o `spark-jupyter` (`docker compose stop spark-jupyter`) e, se estiver rodando, o contêiner `airbyte-abctl-control-plane`.
+
+| Atividade | Tema | Duração | Onde | Ferramentas |
+|---|---|---|---|---|
+| 1 | Contrato da Bronze na ingestão (*shift-left*) | 15 min | 💻 | Pandera, DuckDB |
+| 2 | Governança: grupos, documentação, *exposures*, PII e linhagem | 20 min | 💻 | dbt docs, groups/access |
+| 3 | Airflow 3 em contêiner com dbt isolado | 20 min | 🐳 `airflow` | Docker, Apache Airflow 3.3 |
+| 4 | DAG Medallion ponta a ponta com Cosmos | 30 min | 🐳 `airflow` | Airflow, astronomer-cosmos, dbt |
+| 5 | Agendamento por dados (*Assets*), falhas e manutenção do Iceberg | 15 min | 🐳 + 💻 | Airflow Assets, PyIceberg |
+| 6 | Deploy: ambientes, segredos e CI no GitHub Actions | 20 min | 💻 + GitHub | profiles/targets, GitHub Actions |
+
+> O Airflow é um **terceiro ambiente**: um contêiner com o projeto inteiro montado em `/opt/airflow/curso`, que enxerga o MinIO como `minio:9000` (mesma rede do compose).
+
+---
+
+## Atividade 1 — Contrato da Bronze na Ingestão (*Shift-left*) 💻
+
+### Objetivo
+
+Detectar dados inválidos **na entrada**, antes que contaminem a Silver e a Gold. O dbt testa os dados *depois* de transformados; a validação na ingestão impede que a transformação comece com dados ruins.
+
+### Passo 1 — Instalação
+
+```powershell
+# host, .venv ativo
+pip install "pandera>=0.25"
+```
+
+### Passo 2 — Script de validação (`scripts/15_validar_bronze.py`)
+
+```python
+"""Validação de contrato da Bronze (shift-left) com Pandera.
+Uso: python scripts/15_validar_bronze.py  -> exit code 1 se o contrato for violado."""
+import os
+import sys
+
+import duckdb
+import pandas as pd
+import pandera.pandas as pa
+from pandera.pandas import Check, Column, DataFrameSchema
+
+BRONZE_ROOT = os.getenv("BRONZE_ROOT", "s3://bronze")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+
+# Aceita QUALQUER tipo inteiro (int32 ou int64). A largura do inteiro varia conforme
+# quem gerou o Parquet: o NumPy 1.x no Windows usa int32 como padrão; no Linux, int64.
+# Exigir int64 rejeitaria dados válidos; aceitar float deixaria passar 3.5 pedidos.
+eh_inteiro = Check(lambda s: pd.api.types.is_integer_dtype(s), name="tipo_inteiro")
+
+contrato_pedidos = DataFrameSchema(
+    {
+        "id_pedido": Column(None, [eh_inteiro, Check.gt(0)]),
+        "id_cliente": Column(None, [eh_inteiro, Check.in_range(1, 100_000)]),
+        "status_pedido": Column(str, Check.isin(["concluido", "cancelado", "pendente", "reembolsado"])),
+        "valor_unitario": Column(float, Check.gt(0)),
+        "quantidade": Column(None, [eh_inteiro, Check.in_range(1, 10)]),
+        "valor_total": Column(float, Check.ge(0)),
+        "avaliacao_cliente": Column(float, Check.isin([1, 2, 3, 4, 5]), nullable=True, coerce=True),
+    },
+    checks=[Check(lambda df: (df["valor_total"] - df["valor_unitario"] * df["quantidade"]).abs() <= 0.01,
+                  name="valor_total_consistente")],
+    strict=False,
+)
+
+def main() -> int:
+    con = duckdb.connect()
+    if BRONZE_ROOT.startswith("s3://"):
+        con.execute("INSTALL httpfs; LOAD httpfs;")
+        con.execute(f"""CREATE SECRET minio (TYPE s3, KEY_ID '{os.getenv("MINIO_ACCESS_KEY", "minioadmin")}',
+            SECRET '{os.getenv("MINIO_SECRET_KEY", "minioadmin123")}', ENDPOINT '{MINIO_ENDPOINT}',
+            URL_STYLE 'path', USE_SSL false, REGION 'us-east-1')""")
+    # Valida uma amostra da carga (arquivo) mais recente
+    df = con.execute(f"""
+        WITH ultima_carga AS (
+            SELECT * FROM read_parquet('{BRONZE_ROOT}/ecommerce_sintetico/**/*.parquet', filename = true)
+            WHERE filename = (SELECT max(filename)
+                              FROM read_parquet('{BRONZE_ROOT}/ecommerce_sintetico/**/*.parquet', filename = true))
+        )
+        SELECT * FROM ultima_carga USING SAMPLE reservoir(100000 ROWS) REPEATABLE (42)
+    """).df()
+    try:
+        contrato_pedidos.validate(df, lazy=True)        # lazy=True: coleta TODAS as violações
+    except pa.errors.SchemaErrors as erros:
+        print("❌ Contrato da Bronze violado:")
+        print(erros.failure_cases.groupby(["column", "check"]).size().to_string())
+        return 1
+    print(f"✅ Contrato da Bronze OK ({len(df):,} linhas validadas)")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+```powershell
+python scripts/15_validar_bronze.py
+```
+
+> **Por que não `Column(int)`?** O Pandera traduz `int` como `int64`. Os Parquets gerados na Aula 1 com NumPy 1.x no Windows têm `id_cliente` e `quantidade` em `int32`, e o contrato acusaria `dtype('int64')` em dados válidos. O *check* `eh_inteiro` aceita qualquer largura de inteiro e continua rejeitando `float`. A escolha de *quão estrito* é um contrato é uma decisão de engenharia, que vale discutir com a turma.
+
+### Passo 3 — Provocar uma violação
+
+Grave na Bronze uma carga com problemas (valor negativo e status desconhecido) e rode a validação de novo:
+
+```python
+# scripts/14_carga_invalida_demo.py
+import io, boto3, pandas as pd
+from datetime import datetime, timezone
+
+s3 = boto3.client("s3", endpoint_url="http://localhost:9000", aws_access_key_id="minioadmin",
+                  aws_secret_access_key="minioadmin123", region_name="us-east-1")
+ruim = pd.DataFrame({
+    "id_pedido": [3_000_001, 3_000_002], "id_cliente": [10, 20], "id_produto": [1, 2],
+    "categoria": ["Livros", "Roupas"], "valor_unitario": [10.0, 20.0], "quantidade": [1, 2],
+    "valor_total": [-10.0, 40.0], "status_pedido": ["concluido", "extraviado"], "regiao": ["Sul", "Norte"],
+    "data_pedido": pd.to_datetime(["2022-12-20", "2022-12-21"]), "avaliacao_cliente": [5, None],
+    "_fonte": "teste_qualidade", "_ingerido_em": datetime.now(timezone.utc).isoformat(),
+})
+agora = datetime.now()
+chave = f"ecommerce_sintetico/ano={agora:%Y}/mes={agora:%m}/dia={agora:%d}/zz_invalido_{int(agora.timestamp())}.parquet"
+buf = io.BytesIO(); ruim.to_parquet(buf, index=False)
+s3.put_object(Bucket="bronze", Key=chave, Body=buf.getvalue())
+print("Carga inválida gravada em", chave)
+```
+
+```powershell
+python scripts/14_carga_invalida_demo.py
+python scripts/15_validar_bronze.py         # deve falhar: valor_total < 0 e status 'extraviado'
+dbt build --select stg_ecommerce__pedidos   # o accepted_values da staging também acusa 'desconhecido'
+```
+
+> Depois do experimento, **mova** o arquivo inválido para uma área de quarentena (`bronze/_quarentena/...`) pelo console do MinIO, em vez de apagá-lo. A Bronze é imutável, mas dados inválidos não devem seguir no pipeline.
+
+---
+
+## Atividade 2 — Governança: Documentação, Linhagem, Acesso e PII 💻
+
+### Objetivo
+
+Tornar o projeto **governável**: cada ativo tem descrição, dono, nível de acesso e classificação de sensibilidade, e o caminho do dado é visível da fonte ao consumidor final (dashboards e modelos de ML).
+
+### Passo 1 — Grupos e donos (`models/_groups.yml`)
+
+```yaml
+groups:
+  - name: engenharia_dados
+    owner:
+      name: Time de Engenharia de Dados
+      email: engenharia@curso.example
+  - name: analytics
+    owner:
+      name: Time de Analytics
+      email: analytics@curso.example
+```
+
+Em `dbt_project.yml`, associe as pastas aos grupos:
+
+```yaml
+models:
+  curso_ed:
+    staging:
+      +schema: staging
+      +materialized: view
+      +group: engenharia_dados
+      +access: protected
+    intermediate:
+      +schema: intermediate
+      +materialized: view
+      +group: engenharia_dados
+      +access: protected
+    marts:
+      +schema: marts
+      +materialized: table
+      +group: analytics
+```
+
+> **Experimento de acesso:** em `_intermediate.yml`, adicione `config: {access: private}` ao modelo `int_clientes__metricas` e rode `dbt parse`. O dbt **impede** que `dim_clientes` (grupo `analytics`) referencie um modelo privado de outro grupo. Desfaça em seguida.
+
+### Passo 2 — Documentação reutilizável (`models/docs.md`)
+
+```markdown
+{% docs status_pedido %}
+Status harmonizado pela macro `mapear_status`:
+
+| origem | status_pedido |
+|---|---|
+| concluido | faturado |
+| reembolsado | estornado |
+| cancelado | cancelado |
+| pendente | em_aberto |
+{% enddocs %}
+
+{% docs modelo_churn %}
+Classificador **HistGradientBoosting** treinado por `scripts/13_treinar_churn.py`.
+
+* **Rótulo:** cliente sem pedidos nos `dias_churn` dias após a data de corte.
+* **Features:** somente pedidos anteriores ao corte (*point-in-time*).
+* **Métricas:** gravadas em `data/modelos/churn_metricas.json`.
+{% enddocs %}
+```
+
+Use o bloco no YAML: `description: "{{ doc('status_pedido') }}"` na coluna `status_pedido` de `_staging.yml`.
+
+### Passo 3 — *Exposures*: quem consome a Gold (`models/marts/_exposures.yml`)
+
+```yaml
+version: 2
+
+exposures:
+  - name: dashboard_receita
+    label: "Dashboard de Receita Mensal"
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8088/superset/dashboard/receita
+    description: "Painel executivo de receita por categoria e região."
+    owner:
+      name: Time de Analytics
+      email: analytics@curso.example
+    depends_on:
+      - ref('mart_receita_mensal')
+
+  - name: modelo_churn
+    label: "Modelo de previsão de churn"
+    type: ml
+    maturity: low
+    description: "{{ doc('modelo_churn') }}"
+    owner:
+      name: Time de Ciência de Dados
+      email: ds@curso.example
+    depends_on:
+      - ref('ml_features_clientes')
+```
+
+### Passo 4 — PII: classificação e pseudonimização
+
+`macros/pseudonimizar.sql`:
+
+```sql
+{% macro pseudonimizar(coluna) -%}
+    sha256(concat('{{ env_var("PII_SALT", "troque-este-salt") }}', cast({{ coluna }} as varchar)))
+{%- endmacro %}
+```
+
+`models/marts/analytics/mart_clientes_pseudonimizado.sql` é uma versão para compartilhamento externo, sem o identificador direto:
+
+```sql
+select
+    {{ pseudonimizar('cliente_id') }} as cliente_hash,
+    segmento_cliente,
+    total_pedidos,
+    receita_total
+from {{ ref('dim_clientes') }}
+```
+
+```powershell
+$env:PII_SALT = "um-segredo-longo-do-ambiente"     # bash: export PII_SALT=...
+dbt build --select mart_clientes_pseudonimizado
+```
+
+> **LGPD, pontos de atenção:** (1) pseudonimização **não é** anonimização. Com o *salt*, o dado volta a ser pessoal; o *salt* é segredo e fica fora do Git. (2) O direito de eliminação exige apagar o dado em **todas as camadas**: `DELETE` no Iceberg (Aula 6), reconstrução dos modelos dbt e expiração de snapshots (Atividade 5 desta aula). (3) Marque as colunas com `meta: {pii: true}` para que catálogos (OpenMetadata, DataHub) e políticas de acesso as identifiquem.
+
+### Passo 5 — Linhagem e catálogo
+
+```powershell
+dbt build
+dbt docs generate
+dbt docs serve --port 8081
+```
+
+No site de documentação:
+
+1. Abra `fct_pedidos` e confira descrições, testes e colunas.
+2. No grafo de linhagem, siga o caminho **source → stg → int → dim/fct → mart → exposure**.
+3. Use o filtro `--select +exposure:modelo_churn` no grafo: só aparecem os ativos dos quais o modelo de ML depende (análise de impacto).
+
+```powershell
+dbt ls --resource-type model --select +exposure:modelo_churn        # análise de impacto pela linha de comando
+dbt ls --resource-type model --select config.meta.contem_pii:true   # modelos marcados como contendo PII
+```
+
+### Verificação Final das Atividades 1 e 2
+
+1. Classificar cada teste criado por dimensão de qualidade (validade, unicidade, integridade referencial, consistência, atualidade).
+2. Explicar teste de dados × teste unitário × contrato e onde cada um roda (desenvolvimento, CI, produção).
+3. Justificar o uso de `severity: warn` e `store_failures`.
+4. Demonstrar a validação *shift-left* barrando uma carga inválida.
+5. Usar a linhagem para responder: "se eu alterar `int_pedidos__enriquecidos`, quais dashboards e modelos são afetados?"
+
+> **Desafio:** instale o pacote `elementary-data/elementary` e gere o relatório de observabilidade (`edr report`), que traz o histórico de execuções, testes e detecção de anomalias de volume.
+
+---
+
+## Atividade 3 — Airflow 3 em Contêiner
+
+### Objetivo
+
+Subir um Airflow 3 local, no mesmo *compose* do MinIO, com o dbt instalado em um **ambiente virtual separado**, a prática recomendada para evitar conflitos de dependências entre Airflow e dbt.
+
+### Passo 1 — Ingestão parametrizada pelo ambiente
+
+A ingestão orquestrada usa o `scripts/9_reingerir_com_particionamento.py` (Aula 2), que grava países e pokémons com o `BronzeWriter` nas partições `ano=/mes=/dia=` lidas pelo dbt. Os arquivos do `dlt` ficam fora do padrão `ano=*/**` das *sources* e não alimentariam a Silver.
+
+No `scripts/bronze_writer.py`, troque o endereço fixo por uma variável de ambiente com valor padrão. Assim, o mesmo código roda no host (`localhost`) e no contêiner (`minio`):
+
+```python
+import os   # no topo do arquivo, junto dos demais imports
+
+class BronzeWriter:
+    # Configurações padrão do MinIO local (sobrescritas por variáveis de ambiente)
+    ENDPOINT = os.getenv("MINIO_ENDPOINT_URL", "http://localhost:9000")
+    ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+    BUCKET = "bronze"
+```
+
+O script 9 também precisa da chave da REST Countries. Crie o arquivo `docker/.env`, que o compose lê automaticamente e que o `.gitignore` já exclui do Git:
+
+```text
+RESTCOUNTRIES_API_KEY=sua_chave_aqui
+PII_SALT=um-segredo-longo-do-ambiente
+```
+
+### Passo 2 — Imagem do Airflow (`airflow/Dockerfile`)
+
+```dockerfile
+FROM apache/airflow:3.3.2-python3.12
+
+USER airflow
+
+# Dependências das tarefas Python (ingestão, validação, manutenção, ML)
+RUN pip install --no-cache-dir \
+      "apache-airflow==${AIRFLOW_VERSION}" \
+      "astronomer-cosmos==1.15.*" \
+      "duckdb==1.5.6" "pandera>=0.25" boto3 \
+      "dlt[filesystem,parquet,s3]" \
+      "pyiceberg[sql-sqlite,pyarrow,pandas]>=0.10" \
+      scikit-learn joblib requests truststore
+
+# dbt em venv ISOLADO (Cosmos chama este executável)
+RUN python -m venv /opt/airflow/dbt_venv && \
+    /opt/airflow/dbt_venv/bin/pip install --no-cache-dir \
+      "dbt-core~=1.12.0" "dbt-duckdb~=1.11.0" "duckdb==1.5.6"
+```
+
+### Passo 3 — Serviço no *compose* (`docker/compose.yml`)
+
+Acrescente o serviço `airflow` sob `services:` (no mesmo nível de `minio`):
+
+```yaml
+  airflow:
+    build: ../airflow
+    container_name: airflow
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/curso/airflow/dags
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"   # SOMENTE em laboratório
+      AIRFLOW__COSMOS__ENABLE_TELEMETRY: "false"
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      # Caminhos e conexões vistos de DENTRO do contêiner
+      CURSO_HOME: /opt/airflow/curso
+      DBT_BIN: /opt/airflow/dbt_venv/bin/dbt
+      DUCKDB_PATH: /opt/airflow/curso/data/lakehouse.duckdb   # absoluto: Cosmos executa o dbt em pasta temporária
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_ENDPOINT_URL: http://minio:9000                   # BronzeWriter (script 9)
+      RESTCOUNTRIES_API_KEY: ${RESTCOUNTRIES_API_KEY}          # lido de docker/.env
+      PII_SALT: ${PII_SALT:-troque-este-salt}
+    volumes:
+      - ..:/opt/airflow/curso          # projeto inteiro: dags, scripts, dbt_project, data
+    command: >
+      bash -c "airflow db migrate &&
+               airflow pools set duckdb_pool 1 'DuckDB: um escritor por vez' &&
+               exec airflow standalone"
+    restart: unless-stopped
+```
+
+```powershell
+cd ~/engenharia-dados-2026-2/docker
+docker compose up -d --build airflow
+docker logs -f airflow          # aguarde "Airflow is ready"; Ctrl+C para sair dos logs
+```
+
+Acesse `http://localhost:8080`.
+
+> **Por que `DUCKDB_PATH` absoluto?** O Cosmos copia o projeto dbt para uma pasta temporária antes de executá-lo, então o caminho relativo `../data/lakehouse.duckdb` passaria a apontar para outro lugar. Por isso parametrizamos o `profiles.yml` com `env_var('DUCKDB_PATH', ...)` na Aula 6.
+
+> **Por que um *pool* de 1 vaga?** O DuckDB aceita **um processo escritor por arquivo**. O pool `duckdb_pool` serializa as tarefas dbt; as demais tarefas continuam em paralelo. Com um *warehouse* cliente-servidor (Postgres, Snowflake, BigQuery), esse limite não existe.
+
+---
+
+## Atividade 4 — DAG Medallion de Ponta a Ponta
+
+### Objetivo
+
+Encadear **ingestão → contrato → freshness → transformação → publicação** em um DAG idempotente, com novas tentativas, *timeout* e alerta. Com o Cosmos, cada modelo dbt vira uma tarefa visível no Airflow, com reexecução granular.
+
+### Passo 1 — `airflow/dags/pipeline_medallion.py`
+
+```python
+"""
+DAG pipeline_medallion — Bronze → Silver → Gold, de ponta a ponta.
+
+ingestão (BronzeWriter) → contrato da Bronze (Pandera) → freshness → dbt build (Cosmos) → manutenção Iceberg
+"""
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.sdk import Asset, dag, task
+from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
+from cosmos.constants import LoadMode, TestBehavior
+
+PROJETO = Path(os.getenv("CURSO_HOME", "/opt/airflow/curso"))
+DBT_DIR = PROJETO / "dbt_project"
+DBT_BIN = os.getenv("DBT_BIN", "/opt/airflow/dbt_venv/bin/dbt")
+PY_BIN = os.getenv("PY_BIN", "python")
+
+GOLD_RECEITA = Asset("s3://gold/analytics/receita_mensal.parquet")
+GOLD_FEATURES = Asset("s3://gold/ml/features_clientes.parquet")
+
+
+def alertar_falha(context):
+    """Callback de falha: em produção, enviar para Slack/Teams/e-mail."""
+    ti = context["task_instance"]
+    print(f"🚨 ALERTA: {ti.dag_id}.{ti.task_id} falhou (tentativa {ti.try_number}). Log: {ti.log_url}")
+
+
+default_args = {
+    "owner": "time-dados",
+    "on_failure_callback": alertar_falha,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "retry_exponential_backoff": True,
+    "execution_timeout": timedelta(minutes=30),
+}
+
+profile_config = ProfileConfig(
+    profile_name="curso_ed",
+    target_name=os.getenv("DBT_TARGET", "dev"),
+    profiles_yml_filepath=DBT_DIR / "profiles.yml",
+)
+
+
+@dag(
+    dag_id="pipeline_medallion",
+    description="Ingestão, qualidade e transformação Bronze→Silver→Gold",
+    schedule="0 6 * * *",                 # todo dia às 06:00 (UTC)
+    start_date=datetime(2026, 10, 1),
+    catchup=False,
+    max_active_runs=1,
+    default_args=default_args,
+    tags=["curso", "medallion", "dbt"],
+)
+def pipeline_medallion():
+
+    ingestao_bronze = BashOperator(
+        task_id="ingestao_bronze_writer",
+        bash_command=f"cd {PROJETO} && {PY_BIN} scripts/9_reingerir_com_particionamento.py",
+    )
+
+    contrato_bronze = BashOperator(
+        task_id="contrato_bronze_pandera",
+        bash_command=f"cd {PROJETO} && {PY_BIN} scripts/15_validar_bronze.py",
+    )
+
+    freshness = BashOperator(
+        task_id="dbt_source_freshness",
+        bash_command=f"cd {DBT_DIR} && {DBT_BIN} deps && {DBT_BIN} source freshness --profiles-dir .",
+        pool="duckdb_pool",
+    )
+
+    transformacao = DbtTaskGroup(
+        group_id="dbt_medallion",
+        project_config=ProjectConfig(DBT_DIR),
+        profile_config=profile_config,
+        execution_config=ExecutionConfig(dbt_executable_path=DBT_BIN),
+        render_config=RenderConfig(
+            load_method=LoadMode.DBT_LS,
+            test_behavior=TestBehavior.AFTER_EACH,   # testa cada modelo logo após construí-lo
+        ),
+        operator_args={
+            "install_deps": True,          # roda dbt deps (dbt_utils) antes de cada comando
+            "pool": "duckdb_pool",         # DuckDB aceita UM escritor por vez
+        },
+    )
+
+    @task(outlets=[GOLD_RECEITA, GOLD_FEATURES])
+    def publicar_gold():
+        """Marca os assets Gold como atualizados (dispara DAGs consumidoras)."""
+        print("Gold publicada: receita_mensal e features_clientes")
+
+    manutencao_iceberg = BashOperator(
+        task_id="manutencao_iceberg",
+        bash_command=f"cd {PROJETO} && {PY_BIN} scripts/16_manutencao_iceberg.py",
+        trigger_rule="all_done",           # roda mesmo se algo acima falhar
+    )
+
+    ingestao_bronze >> contrato_bronze >> freshness >> transformacao >> publicar_gold() >> manutencao_iceberg
+
+
+pipeline_medallion()
+```
+
+### Passo 2 — Explorar e executar
+
+1. Na interface, abra o DAG `pipeline_medallion` → **Graph**. Expanda o grupo `dbt_medallion`: cada modelo tem uma tarefa `run` seguida de `test`, e a ordem segue o grafo do dbt.
+2. Clique em **Trigger** e acompanhe a execução.
+3. Abra o **log** de `dbt_medallion.fct_pedidos.run` e localize o comando dbt executado pelo Cosmos.
+
+```powershell
+# Também é possível pela linha de comando, dentro do contêiner
+docker exec -it airflow airflow dags list-import-errors
+docker exec -it airflow airflow dags test pipeline_medallion
+```
+
+> **Testes unitários e Cosmos:** o Cosmos não converte `unit_tests` em tarefas (o log mostra um aviso). Isso é intencional: testes unitários validam **código** e devem rodar no **CI** (Atividade 6), não a cada execução de produção.
+
+### Passo 3 — Falha controlada e reexecução granular
+
+1. Gere de novo a carga inválida da Atividade 1 (`python scripts/14_carga_invalida_demo.py`, no host).
+2. Dispare o DAG: `contrato_bronze_pandera` falha após 2 novas tentativas, as tarefas seguintes ficam `upstream_failed` e o *callback* imprime o alerta no log.
+3. Mova o arquivo para `_quarentena/` no console do MinIO e use **Clear** na tarefa que falhou. O Airflow retoma **dali em diante**, sem reprocessar a ingestão.
+
+> **Idempotência:** reexecutar qualquer tarefa não pode duplicar nem corromper dados. Revise o que garante isso em cada etapa: Bronze particionada e *append-only* com deduplicação na Silver; fato incremental `delete+insert` por chave; marts `table`/`external` reconstruídos por completo.
+
+---
+
+## Atividade 5 — Agendamento Orientado a Dados e Manutenção
+
+### Passo 1 — DAG consumidora (`airflow/dags/treinar_modelo_churn.py`)
+
+```python
+"""DAG orientada a dados: roda quando a Gold de features é atualizada."""
+from datetime import datetime
+
+from airflow.sdk import Asset, dag, task
+
+GOLD_FEATURES = Asset("s3://gold/ml/features_clientes.parquet")
+
+
+@dag(dag_id="treinar_modelo_churn", schedule=[GOLD_FEATURES],
+     start_date=datetime(2026, 10, 1), catchup=False, tags=["curso", "ml"])
+def treinar_modelo_churn():
+
+    @task
+    def treinar():
+        import subprocess
+        subprocess.run(["python", "/opt/airflow/curso/scripts/13_treinar_churn.py"], check=True)
+
+    treinar()
+
+
+treinar_modelo_churn()
+```
+
+Dispare `pipeline_medallion` novamente. Quando `publicar_gold` termina, `treinar_modelo_churn` **inicia sozinho**. Veja o grafo de dependências entre DAGs em **Assets**.
+
+> **Tempo × dados:** o agendamento por *cron* pergunta "que horas são?"; o agendamento por *asset* pergunta "o dado de que eu dependo mudou?". O segundo elimina esperas arbitrárias ("treina às 8h, torcendo para a Gold ter terminado").
+
+### Passo 2 — Manutenção do Iceberg (`scripts/16_manutencao_iceberg.py`)
+
+```python
+"""Manutenção das tabelas Iceberg: expiração de snapshots antigos (retenção + LGPD)."""
+import os
+from datetime import datetime, timedelta, timezone
+
+from pyiceberg.catalog.sql import SqlCatalog
+
+PROJETO = os.getenv("CURSO_HOME", ".")
+catalog = SqlCatalog(
+    "curso_lakehouse",
+    **{
+        "uri": f"sqlite:///{PROJETO}/data/iceberg_catalog/catalog.db",
+        "warehouse": "s3://silver",
+        "s3.endpoint": "http://" + os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        "s3.access-key-id": os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        "s3.secret-access-key": os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
+        "s3.region": "us-east-1",
+    },
+)
+limite = datetime.now(timezone.utc) - timedelta(days=int(os.getenv("ICEBERG_RETENCAO_DIAS", "7")))
+
+for identificador in catalog.list_tables("bronze_processado"):
+    tabela = catalog.load_table(identificador)
+    antes = len(tabela.snapshots())
+    # O snapshot atual nunca é expirado; os anteriores ao limite saem dos metadados
+    tabela.maintenance.expire_snapshots().older_than(limite).commit()
+    tabela = catalog.load_table(identificador)
+    print(f"{'.'.join(identificador)}: {antes} → {len(tabela.snapshots())} snapshots")
+```
+
+```powershell
+# Teste no host, com retenção zero para ver o efeito (o time travel aos snapshots antigos deixa de existir)
+$env:ICEBERG_RETENCAO_DIAS = "0"; python scripts/16_manutencao_iceberg.py
+```
+
+> Expirar snapshots remove o **acesso pelos metadados**. A remoção física de arquivos que nenhum snapshot referencia mais (*orphan files*) e a **compactação** de arquivos pequenos são rotinas complementares (Spark: `rewrite_data_files`, `remove_orphan_files`). Juntas, completam a eliminação exigida pela LGPD.
+
+---
+
+## Atividade 6 — Deploy: Ambientes, Segredos e CI
+
+### Objetivo
+
+Levar o projeto ao modelo de trabalho de produção: **o mesmo código** em três ambientes (dev, ci, prod), segredos fora do Git e **nenhuma mudança chega à `main` sem passar pelo CI**.
+
+### Passo 1 — *Targets* no `profiles.yml`
+
+```yaml
+curso_ed:
+  target: dev
+  outputs:
+    dev:                                     # notebook do aluno
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', '../data/lakehouse.duckdb') }}"
+      threads: 4
+      extensions: [httpfs]
+      secrets:
+        - type: s3
+          key_id: "{{ env_var('MINIO_ACCESS_KEY', 'minioadmin') }}"
+          secret: "{{ env_var('MINIO_SECRET_KEY', 'minioadmin123') }}"
+          endpoint: "{{ env_var('MINIO_ENDPOINT', 'localhost:9000') }}"
+          region: us-east-1
+          url_style: path
+          use_ssl: false
+
+    ci:                                      # GitHub Actions: dados de amostra em disco, sem MinIO
+      type: duckdb
+      path: "ci.duckdb"
+      threads: 4
+
+    prod:                                    # sem valores padrão: falha se o segredo não for injetado
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH') }}"
+      threads: 8
+      extensions: [httpfs]
+      secrets:
+        - type: s3
+          key_id: "{{ env_var('MINIO_ACCESS_KEY') }}"
+          secret: "{{ env_var('MINIO_SECRET_KEY') }}"
+          endpoint: "{{ env_var('MINIO_ENDPOINT') }}"
+          region: us-east-1
+          url_style: path
+          use_ssl: true
+```
+
+### Passo 2 — Dados de amostra para o CI (`scripts/17_gerar_amostra_ci.py`)
+
+```python
+"""Gera uma Bronze pequena e determinística em disco para o CI (sem MinIO)."""
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+RAIZ = Path("ci_data/bronze")
+rng = np.random.default_rng(42)
+N = 5_000
+
+pedidos = pd.DataFrame({
+    "id_pedido": np.arange(1, N + 1),
+    "id_cliente": rng.integers(1, 501, N),
+    "id_produto": rng.integers(1, 201, N),
+    "categoria": rng.choice(["Eletrônicos", "Roupas", "Alimentos", "Livros", "Esportes"], N),
+    "valor_unitario": np.round(rng.uniform(5, 2000, N), 2),
+    "quantidade": rng.integers(1, 11, N),
+    "status_pedido": rng.choice(["concluido", "cancelado", "pendente", "reembolsado"], N, p=[.75, .1, .1, .05]),
+    "regiao": rng.choice(["Sudeste", "Sul", "Nordeste", "Norte", "Centro-Oeste"], N),
+    "data_pedido": pd.date_range("2022-01-01", periods=N, freq="90min"),
+    "avaliacao_cliente": rng.choice([1, 2, 3, 4, 5], N).astype(float),
+    "_fonte": "ci",
+    "_ingerido_em": datetime.now(timezone.utc).isoformat(),
+})
+pedidos["valor_total"] = (pedidos["valor_unitario"] * pedidos["quantidade"]).round(2)
+
+paises = pd.DataFrame({"cca2": ["BR"], "nome_comum": ["Brazil"], "nome_oficial": ["Federative Republic of Brazil"],
+                       "regiao": ["Americas"], "capital": ["Brasília"], "populacao": [212_000_000],
+                       "area_km2": [8_515_767.0], "_ingerido_em": [datetime.now(timezone.utc).isoformat()]})
+pokemon = pd.DataFrame({"id": [1], "nome": ["bulbasaur"], "tipo_primario": ["grass"], "tipo_secundario": ["poison"],
+                        "altura_dm": [7], "peso_hg": [69], "hp_base": [45], "ataque_base": [49], "defesa_base": [49],
+                        "_ingerido_em": [datetime.now(timezone.utc).isoformat()]})
+
+for caminho, df in [("ecommerce_sintetico/ano=2026/mes=01/dia=01/pedidos.parquet", pedidos),
+                    ("restcountries_api/countries/ano=2026/mes=01/dia=01/countries.parquet", paises),
+                    ("pokeapi/pokemon/ano=2026/mes=01/dia=01/pokemon.parquet", pokemon)]:
+    destino = RAIZ / caminho
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(destino, index=False)
+for sub in ["analytics", "ml"]:
+    Path("ci_data/gold", sub).mkdir(parents=True, exist_ok=True)
+print("Amostra de CI gerada em", RAIZ.resolve())
+```
+
+Teste localmente, exatamente como o CI fará:
+
+```powershell
+python scripts/17_gerar_amostra_ci.py
+cd dbt_project
+dbt deps
+dbt build --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+```
+
+### Passo 3 — Pipeline de CI (`.github/workflows/ci_dados.yml`)
+
+```yaml
+name: CI — pipeline de dados
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["dbt_project/**", "scripts/**", "airflow/**", ".github/workflows/**"]
+
+jobs:
+  qualidade:
+    runs-on: ubuntu-latest
+    env:
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      PII_SALT: ${{ secrets.PII_SALT }}          # segredo do repositório, nunca no código
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install "dbt-core~=1.12.0" "dbt-duckdb~=1.11.0" "duckdb>=1.4,<2" pandas numpy pyarrow
+
+      - name: Gerar Bronze de amostra
+        run: python scripts/17_gerar_amostra_ci.py
+
+      - name: dbt deps + parse
+        working-directory: dbt_project
+        run: dbt deps && dbt parse --target ci
+
+      - name: Testes unitários (lógica)
+        working-directory: dbt_project
+        run: dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - name: Build completo + testes de dados
+        working-directory: dbt_project
+        run: dbt build --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - name: Documentação como artefato
+        working-directory: dbt_project
+        run: dbt docs generate --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: dbt_project/target/
+```
+
+O `.gitignore` do repositório já exclui `data/`, `.venv/` e `.env`. Acrescente:
+
+```text
+ci_data/
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+*.duckdb
+*.duckdb.wal
+data/
+.env
+```
+
+### Passo 4 — Fluxo de trabalho
+
+```powershell
+git checkout -b feature/teste-faixa-valor
+# altere algo em models/ (ex.: nova coluna em mart_receita_mensal)
+git add . ; git commit -m "feat: nova métrica no mart de receita"
+git push -u origin feature/teste-faixa-valor
+# abra o Pull Request no GitHub e acompanhe a aba "Actions"
+```
+
+> **Slim CI (projetos grandes):** guarde o `manifest.json` da produção e rode só o que mudou e seus dependentes: `dbt build --select state:modified+ --defer --state prod-artifacts/`. **Deploy contínuo:** após o *merge*, um segundo *workflow* publica a nova imagem do Airflow e o projeto dbt no ambiente de produção. A próxima execução agendada já usa a versão nova.
+
+### Consolidação da Aula 8
+
+1. Explicar o papel de cada componente do Airflow 3 em execução (API server/UI, scheduler, dag-processor, triggerer).
+2. Justificar *retries*, *timeout*, `max_active_runs=1`, *pool* e `trigger_rule` no DAG.
+3. Demonstrar a reexecução granular de uma tarefa após a correção de uma falha.
+4. Mostrar a DAG `treinar_modelo_churn` disparada por *asset*.
+5. Descrever o caminho de uma mudança de código: *branch* → PR → CI → *merge* → produção.
+
+---
+
+## Fechamento do Curso — Checklist do Projeto Final
+
+| Camada / Tema | Entregável | Evidência |
+|---|---|---|
+| Fundamentos | Ambiente Docker + MinIO + estrutura Medallion | `docker compose ps`, buckets |
+| Bronze | ≥ 2 fontes ingeridas (dlt/Airbyte), particionadas, com metadados | Caminhos no MinIO + manifesto |
+| Lakehouse | Tabela Iceberg com *time travel*, `delete` e evolução de schema | Notebook executado |
+| Silver | *staging* + *intermediate* no dbt, com deduplicação | `dbt docs` (linhagem) |
+| Gold | Esquema estrela, SCD2, mart em `s3://gold`, *feature table* sem vazamento | Parquets na Gold + métricas do modelo |
+| Qualidade | Testes genéricos, singulares e unitários; contrato; Pandera | `dbt build` verde + falha controlada |
+| Governança | Descrições, donos, *exposures*, PII marcada e pseudonimizada | Site `dbt docs` |
+| Orquestração | DAG ponta a ponta + DAG por *asset* + manutenção | Execução bem-sucedida no Airflow |
+| Deploy | CI no GitHub Actions passando em um PR | Link do *workflow* |
+
+---
