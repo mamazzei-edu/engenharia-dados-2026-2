@@ -1,6 +1,6 @@
 """
 Utilitário para gravação padronizada na camada Bronze do Data Lake.
- 
+
 Encapsula as boas práticas de:
   - Particionamento por data de ingestão
   - Adição de metadados de rastreabilidade
@@ -8,7 +8,7 @@ Encapsula as boas práticas de:
   - Registro de manifesto de ingestão
   - Verificação de integridade (contagem de registros)
 """
- 
+
 import pandas as pd
 import boto3
 import json
@@ -18,14 +18,15 @@ import logging
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Optional
+import os
 
 logger = logging.getLogger(__name__)
- 
- 
+
+
 class BronzeWriter:
     """
     Gerencia a gravação padronizada de dados na camada Bronze do Data Lake.
- 
+
     Uso:
         writer = BronzeWriter()
         resultado = writer.gravar(
@@ -36,12 +37,12 @@ class BronzeWriter:
         print(resultado["caminho_objeto"])
     """
 
-# Configurações padrão do MinIO local
-    ENDPOINT = "http://localhost:9000"
-    ACCESS_KEY = "minioadmin"
-    SECRET_KEY = "minioadmin123"
+    # Configurações padrão do MinIO local
+    ENDPOINT = os.getenv("MINIO_ENDPOINT_URL", "http://localhost:9000")
+    ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
     BUCKET = "bronze"
- 
+
     def __init__(
         self,
         endpoint: str = ENDPOINT,
@@ -57,7 +58,7 @@ class BronzeWriter:
             aws_secret_access_key=secret_key,
             region_name="us-east-1",
         )
- 
+
     def _construir_caminho(
         self,
         sistema_origem: str,
@@ -66,7 +67,7 @@ class BronzeWriter:
     ) -> str:
         """
         Constrói o caminho S3 seguindo a convenção de particionamento.
- 
+
         Exemplo de saída:
             pokeapi/pokemon/ano=2024/mes=01/dia=15/pokemon_1705363200.parquet
         """
@@ -77,7 +78,7 @@ class BronzeWriter:
         )
         nome_arquivo = f"{entidade}_{int(timestamp.timestamp())}.parquet"
         return str(PurePosixPath(sistema_origem) / entidade / particao / nome_arquivo)
-    
+
     def _adicionar_metadados(
         self,
         df: pd.DataFrame,
@@ -96,11 +97,9 @@ class BronzeWriter:
         df["_particao_data"] = timestamp.strftime("%Y-%m-%d")
         return df
 
-
     def _calcular_checksum(self, buffer: bytes) -> str:
         """Calcula o hash MD5 do arquivo para verificação de integridade."""
         return hashlib.md5(buffer).hexdigest()
-
 
     def gravar(
         self,
@@ -113,7 +112,7 @@ class BronzeWriter:
     ) -> dict:
         """
         Grava um DataFrame Pandas na camada Bronze do MinIO.
- 
+
         Args:
             df:              DataFrame com os dados a serem gravados.
             sistema_origem:  Identificador do sistema de origem (ex: 'pokeapi').
@@ -121,30 +120,30 @@ class BronzeWriter:
             versao_schema:   Versão do schema dos dados (para controle de evolução).
             compressao:      Algoritmo de compressão Parquet ('snappy' ou 'zstd').
             timestamp:       Data/hora de ingestão. Se None, usa o momento atual.
- 
+
         Returns:
             Dicionário com metadados da operação de gravação.
         """
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
- 
+
         # Adicionar metadados de rastreabilidade
         df_com_metadados = self._adicionar_metadados(
             df, sistema_origem, versao_schema, timestamp
         )
- 
+
         # Construir o caminho do objeto no MinIO
         caminho_objeto = self._construir_caminho(sistema_origem, entidade, timestamp)
- 
+
         # Serializar para Parquet em memória
         buffer = io.BytesIO()
         df_com_metadados.to_parquet(buffer, index=False, compression=compressao)
         buffer.seek(0)
         dados_bytes = buffer.read()
- 
+
         # Calcular checksum para verificação de integridade
         checksum = self._calcular_checksum(dados_bytes)
- 
+
         # Upload para o MinIO
         self.client.put_object(
             Bucket=self.bucket,
@@ -159,7 +158,7 @@ class BronzeWriter:
                 "versao_schema": versao_schema,
             },
         )
- 
+
         resultado = {
             "caminho_objeto": f"s3://{self.bucket}/{caminho_objeto}",
             "registros": len(df),
@@ -169,13 +168,13 @@ class BronzeWriter:
             "compressao": compressao,
             "timestamp_ingestao": timestamp.isoformat(),
         }
- 
+
         logger.info(
             f"✅ Bronze gravado: {caminho_objeto} "
             f"({resultado['registros']:,} registros, "
             f"{resultado['tamanho_bytes'] / 1024:.1f} KB)"
         )
- 
+
         return resultado
 
     def registrar_manifesto(self, execucao: dict) -> None:
@@ -189,16 +188,16 @@ class BronzeWriter:
             f"ano={timestamp.year}/mes={timestamp.month:02d}/dia={timestamp.day:02d}/"
             f"manifesto_{int(timestamp.timestamp())}.json"
         )
- 
+
         self.client.put_object(
             Bucket=self.bucket,
             Key=chave_manifesto,
             Body=json.dumps(execucao, indent=2, ensure_ascii=False, default=str),
             ContentType="application/json",
         )
- 
+
         logger.info(f"📋 Manifesto registrado: {chave_manifesto}")
- 
+
     def listar_particoes(self, sistema_origem: str, entidade: str) -> list:
         """
         Lista todas as partições disponíveis para uma entidade específica.
@@ -206,9 +205,9 @@ class BronzeWriter:
         """
         prefixo = f"{sistema_origem}/{entidade}/"
         response = self.client.list_objects_v2(
-        Bucket=self.bucket, Prefix=prefixo, Delimiter="/"
+            Bucket=self.bucket, Prefix=prefixo, Delimiter="/"
         )
- 
+
         particoes = []
         # Navegar recursivamente pelas partições
         for prefix in response.get("CommonPrefixes", []):
@@ -221,10 +220,12 @@ class BronzeWriter:
                 )
                 for obj in sub_sub_response.get("Contents", []):
                     if obj["Key"].endswith(".parquet"):
-                        particoes.append({
-                            "caminho": obj["Key"],
-                            "tamanho_bytes": obj["Size"],
-                            "ultima_modificacao": obj["LastModified"],
-                        })
- 
+                        particoes.append(
+                            {
+                                "caminho": obj["Key"],
+                                "tamanho_bytes": obj["Size"],
+                                "ultima_modificacao": obj["LastModified"],
+                            }
+                        )
+
         return particoes

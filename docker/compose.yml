@@ -1,6 +1,6 @@
 services:
   minio:
-    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z   # fixe a versão; evite "latest"
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z # fixe a versão; evite "latest"
     container_name: minio-datalake
     ports:
       - "9000:9000" # API S3
@@ -14,13 +14,44 @@ services:
     command: server /data --console-address ":9001"
     healthcheck:
       # a imagem é mínima (UBI micro) e pode não ter curl; usa o mc embutido
-      test: ["CMD", "mc", "ready", "local"]
+      test: [ "CMD", "mc", "ready", "local" ]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 10s
     restart: unless-stopped
 
+  airflow:
+    build: ./airflow
+    container_name: airflow
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/curso/airflow/dags
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true" # SOMENTE em laboratório
+      AIRFLOW__COSMOS__ENABLE_TELEMETRY: "false"
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      # Caminhos e conexões vistos de DENTRO do contêiner
+      CURSO_HOME: /opt/airflow/curso
+      DBT_BIN: /opt/airflow/dbt_venv/bin/dbt
+      DUCKDB_PATH: /opt/airflow/curso/data/lakehouse.duckdb # absoluto: Cosmos executa o dbt em pasta temporária
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_ENDPOINT_URL: http://minio:9000 # BronzeWriter (script 9)
+      RESTCOUNTRIES_API_KEY: ${RESTCOUNTRIES_API_KEY} # lido de docker/.env
+      PII_SALT: ${PII_SALT:-troque-este-salt}
+    volumes:
+      - ..:/opt/airflow/curso # projeto inteiro: dags, scripts, dbt_project, data
+    command: >
+      bash -c "airflow db migrate &&
+               airflow pools set duckdb_pool 1 'DuckDB: um escritor por vez' &&
+               exec airflow standalone"
+    restart: unless-stopped
 
   # Jupyter com PySpark e suporte a S3 (MinIO)
   spark-jupyter:
@@ -29,8 +60,8 @@ services:
     image: curso/spark-jupyter:3.5.0-duckdb
     container_name: spark-jupyter
     ports:
-      - "8888:8888"   # Interface Jupyter
-      - "4040:4040"   # Spark UI (monitoramento de jobs)
+      - "8888:8888" # Interface Jupyter
+      - "4040:4040" # Spark UI (monitoramento de jobs)
     environment:
       JUPYTER_ENABLE_LAB: "yes"
       SPARK_OPTS: "--driver-java-options=-Xms1g --driver-java-options=-Xmx4g"
@@ -39,7 +70,7 @@ services:
       - ../scripts:/home/jovyan/scripts
       - ../data:/home/jovyan/data
     networks:
-      - default    
+      - default
 
 volumes:
   minio_data:

@@ -1,0 +1,25 @@
+version: 2
+
+exposures:
+  - name: dashboard_receita
+    label: "Dashboard de Receita Mensal"
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8088/superset/dashboard/receita
+    description: "Painel executivo de receita por categoria e região."
+    owner:
+      name: Time de Analytics
+      email: analytics@curso.example
+    depends_on:
+      - ref('mart_receita_mensal')
+
+  - name: modelo_churn
+    label: "Modelo de previsão de churn"
+    type: ml
+    maturity: low
+    description: "{{ doc('modelo_churn') }}"
+    owner:
+      name: Time de Ciência de Dados
+      email: ds@curso.example
+    depends_on:
+      - ref('ml_features_clientes')

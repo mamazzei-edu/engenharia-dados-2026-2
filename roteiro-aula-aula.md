@@ -4412,7 +4412,7 @@ dbt build
 
 ```sql
 -- As falhas ficam em uma tabela de auditoria (store_failures)
--- dbt show --inline "select * from dbt_test__audit.assert_produto_em_categoria_unica limit 5"
+-- dbt show --limit 5 --inline "select * from dbt_test__audit.assert_produto_em_categoria_unica"
 ```
 
 ### Passo 5 — *Freshness* das fontes
@@ -4557,7 +4557,7 @@ Detectar dados inválidos **na entrada**, antes que contaminem a Silver e a Gold
 
 ```powershell
 # host, .venv ativo
-pip install "pandera>=0.25"
+python -m pip install "pandera>=0.25"
 ```
 
 ### Passo 2 — Script de validação (`scripts/15_validar_bronze.py`)
@@ -5092,6 +5092,8 @@ def treinar_modelo_churn():
 
 treinar_modelo_churn()
 ```
+
+## Aula de 19/11/2026 - Final da aula.
 
 Dispare `pipeline_medallion` novamente. Quando `publicar_gold` termina, `treinar_modelo_churn` **inicia sozinho**. Veja o grafo de dependências entre DAGs em **Assets**.
 

@@ -20,9 +20,15 @@ models:
     staging:
       +schema: staging
       +materialized: view
+      +group: engenharia_dados
+      +access: protected
     intermediate:
       +schema: intermediate
       +materialized: view
+      +group: engenharia_dados
+      +access: protected
     marts:
       +schema: marts
       +materialized: table
+      +group: analytics
+      +access: protected

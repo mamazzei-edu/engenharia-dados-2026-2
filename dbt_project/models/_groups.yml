@@ -1,0 +1,9 @@
+groups:
+  - name: engenharia_dados
+    owner:
+      name: Time de Engenharia de Dados
+      email: engenharia@curso.example
+  - name: analytics
+    owner:
+      name: Time de Analytics
+      email: analytics@curso.example
