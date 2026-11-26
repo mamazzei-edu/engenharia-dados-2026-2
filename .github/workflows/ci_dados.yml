@@ -25,6 +25,9 @@ jobs:
       - name: Gerar Bronze de amostra
         run: python scripts/17_gerar_amostra_ci.py
 
+      - name: Alterar diretório de trabalho
+        run: cd dbt_project
+
       - name: dbt deps + parse
         working-directory: dbt_project
         run: dbt deps && dbt parse --target ci
