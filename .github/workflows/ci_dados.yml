@@ -35,7 +35,7 @@ jobs:
         working-directory: dbt_project
         run: dbt deps && dbt parse --target ci
 
-      - name: Testes unitários (lógica)
+      - name: Testes unitários lógica
         working-directory: dbt_project
         run: dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
 
