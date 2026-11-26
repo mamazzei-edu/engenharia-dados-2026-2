@@ -25,15 +25,16 @@ jobs:
       - name: Gerar Bronze de amostra
         run: python scripts/17_gerar_amostra_ci.py
 
-      - name: Cria diretório ci_data
-        run: mkdir -p ci_data/bronze ci_data/gold
-
       - name: Alterar diretório de trabalho
         run: cd dbt_project
 
       - name: dbt deps + parse
         working-directory: dbt_project
         run: dbt deps && dbt parse --target ci
+
+      - name: Criar diretorio ci_data
+        working-directory: dbt_project
+        run: mkdir -p ../ci_data/bronze ../ci_data/gold
 
       - name: Testes unitários lógica
         working-directory: dbt_project

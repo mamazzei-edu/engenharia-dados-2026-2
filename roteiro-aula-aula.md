@@ -5050,7 +5050,7 @@ pipeline_medallion()
 ```powershell
 # Também é possível pela linha de comando, dentro do contêiner
 docker exec -it airflow airflow dags list-import-errors
-docker exec -it adocker 
+docker exec -it airflow airflow dags test pipeline_medallion
 ```
 
 > **Testes unitários e Cosmos:** o Cosmos não converte `unit_tests` em tarefas (o log mostra um aviso). Isso é intencional: testes unitários validam **código** e devem rodar no **CI** (Atividade 6), não a cada execução de produção.
@@ -5277,7 +5277,11 @@ jobs:
         working-directory: dbt_project
         run: dbt deps && dbt parse --target ci
 
-      - name: Testes unitários (lógica)
+      - name: Criar diretorio ci_data
+        working-directory: dbt_project
+        run: mkdir -p ../ci_data/bronze ../ci_data/gold
+
+      - name: Testes unitários lógica
         working-directory: dbt_project
         run: dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
 
