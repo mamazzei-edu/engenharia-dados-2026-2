@@ -1,0 +1,47 @@
+name: CI — pipeline de dados
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["dbt_project/**", "scripts/**", "airflow/**", ".github/workflows/**"]
+
+jobs:
+  qualidade:
+    runs-on: ubuntu-latest
+    env:
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      PII_SALT: ${{ secrets.PII_SALT }}          # segredo do repositório, nunca no código
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install "dbt-core~=1.12.0" "dbt-duckdb~=1.11.0" "duckdb>=1.4,<2" pandas numpy pyarrow
+
+      - name: Gerar Bronze de amostra
+        run: python scripts/17_gerar_amostra_ci.py
+
+      - name: dbt deps + parse
+        working-directory: dbt_project
+        run: dbt deps && dbt parse --target ci
+
+      - name: Testes unitários (lógica)
+        working-directory: dbt_project
+        run: dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - name: Build completo + testes de dados
+        working-directory: dbt_project
+        run: dbt build --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - name: Documentação como artefato
+        working-directory: dbt_project
+        run: dbt docs generate --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: dbt_project/target/

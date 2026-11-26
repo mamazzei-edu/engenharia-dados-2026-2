@@ -1,7 +1,7 @@
 curso_ed:
   target: dev
   outputs:
-    dev:
+    dev:                                     # notebook do aluno
       type: duckdb
       path: "{{ env_var('DUCKDB_PATH', '../data/lakehouse.duckdb') }}"
       threads: 4
@@ -14,3 +14,22 @@ curso_ed:
           region: us-east-1
           url_style: path
           use_ssl: false
+
+    ci:                                      # GitHub Actions: dados de amostra em disco, sem MinIO
+      type: duckdb
+      path: "ci.duckdb"
+      threads: 4
+
+    prod:                                    # sem valores padrão: falha se o segredo não for injetado
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH') }}"
+      threads: 8
+      extensions: [httpfs]
+      secrets:
+        - type: s3
+          key_id: "{{ env_var('MINIO_ACCESS_KEY') }}"
+          secret: "{{ env_var('MINIO_SECRET_KEY') }}"
+          endpoint: "{{ env_var('MINIO_ENDPOINT') }}"
+          region: us-east-1
+          url_style: path
+          use_ssl: true
