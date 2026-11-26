@@ -13,7 +13,9 @@ select
     / nullif(count(*) filter (where f.status_pedido = 'faturado'), 0)
         as ticket_medio,
     count(distinct f.cliente_sk) as clientes_unicos,
-    avg(f.avaliacao_cliente) as nota_media
+    avg(f.avaliacao_cliente) as nota_media,
+    avg(f.avaliacao_cliente) filter (where f.status_pedido = 'faturado') as nota_media_faturados,
+    count(*) filter (where f.status_pedido = 'cancelado') as pedidos_cancelados
 from {{ ref('fct_pedidos') }} f
 join {{ ref('dim_datas') }} d using (data_sk)
 join {{ ref('dim_categorias') }} c using (categoria_sk)

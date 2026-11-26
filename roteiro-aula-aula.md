@@ -5050,7 +5050,7 @@ pipeline_medallion()
 ```powershell
 # Também é possível pela linha de comando, dentro do contêiner
 docker exec -it airflow airflow dags list-import-errors
-docker exec -it airflow airflow dags test pipeline_medallion
+docker exec -it adocker 
 ```
 
 > **Testes unitários e Cosmos:** o Cosmos não converte `unit_tests` em tarefas (o log mostra um aviso). Isso é intencional: testes unitários validam **código** e devem rodar no **CI** (Atividade 6), não a cada execução de produção.
