@@ -5277,21 +5277,17 @@ jobs:
         working-directory: dbt_project
         run: dbt deps && dbt parse --target ci
 
-      - name: Criar diretorio ci_data
-        working-directory: dbt_project
-        run: mkdir -p ../ci_data/bronze ../ci_data/gold
-
       - name: Testes unitários lógica
         working-directory: dbt_project
-        run: dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+        run: 'dbt test --select test_type:unit --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"'
 
       - name: Build completo + testes de dados
         working-directory: dbt_project
-        run: dbt build --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+        run: 'dbt build --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"'
 
       - name: Documentação como artefato
         working-directory: dbt_project
-        run: dbt docs generate --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"
+        run: 'dbt docs generate --target ci --vars "{bronze_root: ../ci_data/bronze, gold_root: ../ci_data/gold}"'
 
       - uses: actions/upload-artifact@v4
         with:
